@@ -1,6 +1,8 @@
 /**
- * Heavy WebGL demo – intentionally expensive per pixel.
- * No knowledge of OpenScale. Drop OpenScale.js next to index.html to speed it up.
+ * Heavy interactive WebGL simulation.
+ * - Touch / mouse drag to move the attractor
+ * - Many particles + expensive background
+ * - No knowledge of OpenScale
  */
 (function () {
   "use strict";
@@ -8,12 +10,65 @@
   const canvas = document.getElementById("game");
   if (!canvas) return;
 
+  // --- Input state (CSS pixel space 0..1) ---
+  const input = {
+    x: 0.5,
+    y: 0.5,
+    down: false,
+    px: 0.5,
+    py: 0.5
+  };
+
+  function eventToUV(e) {
+    const r = canvas.getBoundingClientRect();
+    const src = e.touches && e.touches[0] ? e.touches[0] : e;
+    return {
+      x: (src.clientX - r.left) / Math.max(1, r.width),
+      y: (src.clientY - r.top) / Math.max(1, r.height)
+    };
+  }
+
+  function onDown(e) {
+    e.preventDefault();
+    input.down = true;
+    const p = eventToUV(e);
+    input.x = input.px = p.x;
+    input.y = input.py = p.y;
+  }
+  function onMove(e) {
+    e.preventDefault();
+    const p = eventToUV(e);
+    if (input.down) {
+      input.x = p.x;
+      input.y = p.y;
+    }
+    input.px = p.x;
+    input.py = p.y;
+  }
+  function onUp(e) {
+    e.preventDefault();
+    input.down = false;
+  }
+
+  canvas.addEventListener("mousedown", onDown, { passive: false });
+  canvas.addEventListener("mousemove", onMove, { passive: false });
+  window.addEventListener("mouseup", onUp, { passive: false });
+  canvas.addEventListener("touchstart", onDown, { passive: false });
+  canvas.addEventListener("touchmove", onMove, { passive: false });
+  canvas.addEventListener("touchend", onUp, { passive: false });
+  canvas.addEventListener("touchcancel", onUp, { passive: false });
+
+  // --- Canvas size ---
   function fit() {
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     const w = window.innerWidth;
     const h = window.innerHeight;
-    canvas.width = Math.max(1, Math.floor(w * dpr));
-    canvas.height = Math.max(1, Math.floor(h * dpr));
+    // Only set if OpenScale hasn't taken control of buffer size yet;
+    // still safe: OpenScale will overwrite width/height each frame if active.
+    if (!window.OpenScale || !window.OpenScale.getInstance || !window.OpenScale.getInstance()) {
+      canvas.width = Math.max(1, Math.floor(w * dpr));
+      canvas.height = Math.max(1, Math.floor(h * dpr));
+    }
     canvas.style.width = w + "px";
     canvas.style.height = h + "px";
   }
@@ -39,6 +94,65 @@
     return;
   }
 
+  // --- CPU particle simulation (interactive) ---
+  const COUNT = 48;
+  const particles = [];
+  for (let i = 0; i < COUNT; i++) {
+    const a = (i / COUNT) * Math.PI * 2;
+    particles.push({
+      x: 0.5 + Math.cos(a) * 0.25,
+      y: 0.5 + Math.sin(a) * 0.2,
+      vx: (Math.random() - 0.5) * 0.02,
+      vy: (Math.random() - 0.5) * 0.02,
+      r: 0.03 + Math.random() * 0.04,
+      hue: i / COUNT
+    });
+  }
+
+  // Pack as flat array for uniform (max ~16 orbs in shader for compatibility)
+  const MAX_ORBS = 16;
+  const orbData = new Float32Array(MAX_ORBS * 4); // x, y, radius, hue
+
+  function simulate(dt) {
+    const atrX = input.x;
+    const atrY = input.y;
+    const strength = input.down ? 1.8 : 0.55;
+    const damp = 0.985;
+
+    for (let i = 0; i < COUNT; i++) {
+      const p = particles[i];
+      const dx = atrX - p.x;
+      const dy = atrY - p.y;
+      const d2 = dx * dx + dy * dy + 0.0008;
+      const inv = strength / d2;
+      // attract toward pointer
+      p.vx += dx * inv * dt * 0.15;
+      p.vy += dy * inv * dt * 0.15;
+      // mild swirl
+      p.vx += -dy * 0.08 * dt;
+      p.vy += dx * 0.08 * dt;
+      p.vx *= damp;
+      p.vy *= damp;
+      p.x += p.vx * dt * 60;
+      p.y += p.vy * dt * 60;
+      // soft bounds
+      if (p.x < 0.02) { p.x = 0.02; p.vx *= -0.5; }
+      if (p.x > 0.98) { p.x = 0.98; p.vx *= -0.5; }
+      if (p.y < 0.02) { p.y = 0.02; p.vy *= -0.5; }
+      if (p.y > 0.98) { p.y = 0.98; p.vy *= -0.5; }
+    }
+
+    // write first MAX_ORBS to uniform buffer layout
+    for (let i = 0; i < MAX_ORBS; i++) {
+      const p = particles[i];
+      orbData[i * 4] = p.x;
+      orbData[i * 4 + 1] = p.y;
+      orbData[i * 4 + 2] = p.r;
+      orbData[i * 4 + 3] = p.hue;
+    }
+  }
+
+  // --- Shaders ---
   const vsSrc = `
     attribute vec2 a_pos;
     void main() {
@@ -46,17 +160,18 @@
     }
   `;
 
-  // Intentionally heavy fragment shader: layered fbm, many lights, soft particles
   const fsSrc = `
     precision highp float;
     uniform float u_time;
     uniform vec2  u_res;
-    uniform float u_quality; // 1.0 = full cost
+    uniform vec2  u_attractor;
+    uniform float u_down;
+    // 16 orbs: xy = pos, z = radius, w = hue
+    uniform vec4  u_orbs[16];
 
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
     }
-
     float noise(vec2 p) {
       vec2 i = floor(p);
       vec2 f = fract(p);
@@ -67,73 +182,68 @@
       vec2 u = f * f * (3.0 - 2.0 * f);
       return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
     }
-
-    // Expensive fbm – 8 octaves
     float fbm(vec2 p) {
       float v = 0.0;
       float a = 0.5;
       mat2 m = mat2(1.6, 1.2, -1.2, 1.6);
-      for (int i = 0; i < 8; i++) {
+      for (int i = 0; i < 7; i++) {
         v += a * noise(p);
         p = m * p;
         a *= 0.5;
       }
       return v;
     }
-
-    // Domain-warped fbm (very fill-rate heavy)
     float warp(vec2 p, float t) {
       vec2 q = vec2(fbm(p + t * 0.05), fbm(p + vec2(5.2, 1.3) + t * 0.04));
       vec2 r = vec2(
-        fbm(p + 4.0 * q + vec2(1.7, 9.2) + t * 0.03),
-        fbm(p + 4.0 * q + vec2(8.3, 2.8) + t * 0.02)
+        fbm(p + 3.5 * q + vec2(1.7, 9.2) + t * 0.03),
+        fbm(p + 3.5 * q + vec2(8.3, 2.8) + t * 0.02)
       );
-      return fbm(p + 4.0 * r);
+      return fbm(p + 3.5 * r);
+    }
+    vec3 hueColor(float h) {
+      return 0.5 + 0.5 * cos(6.28318 * (h + vec3(0.0, 0.33, 0.67)));
     }
 
     void main() {
       vec2 uv = gl_FragCoord.xy / u_res;
+      // aspect-correct centered coords for background
       vec2 p = (gl_FragCoord.xy - 0.5 * u_res) / u_res.y;
-
       float t = u_time;
 
-      // Heavy background
-      float n = warp(p * 2.2 + vec2(t * 0.08, 0.0), t);
-      vec3 col = mix(vec3(0.02, 0.04, 0.12), vec3(0.08, 0.25, 0.55), n);
-      col += vec3(0.15, 0.05, 0.25) * fbm(p * 5.0 - t * 0.1);
+      // Heavy animated background
+      float n = warp(p * 2.0 + vec2(t * 0.07, 0.0), t);
+      vec3 col = mix(vec3(0.015, 0.03, 0.09), vec3(0.06, 0.2, 0.48), n);
+      col += vec3(0.12, 0.04, 0.2) * fbm(p * 4.5 - t * 0.08);
 
-      // Many soft "particles" / orbs – each adds samples
-      const int ORBS = 18;
-      for (int i = 0; i < ORBS; i++) {
-        float fi = float(i);
-        float speed = 0.25 + fract(fi * 0.17) * 0.55;
-        float phase = fi * 1.7;
-        vec2 c = vec2(
-          0.55 * sin(t * speed + phase),
-          0.40 * cos(t * speed * 0.85 + phase * 1.3)
-        );
-        // slight noise offset so they are not perfect circles
-        c += 0.08 * vec2(noise(c * 3.0 + t), noise(c * 3.0 - t));
-        float d = length(p - c);
-        float r = 0.04 + 0.03 * sin(t * 1.5 + fi);
-        float glow = smoothstep(r * 3.5, r * 0.2, d);
-        vec3 orbCol = 0.5 + 0.5 * cos(vec3(0.0, 2.0, 4.0) + fi * 0.5 + t * 0.3);
-        col += orbCol * glow * (0.55 + 0.45 * n);
+      // Interactive attractor glow
+      vec2 auv = u_attractor;
+      float ad = length(uv - auv);
+      float ar = mix(0.06, 0.11, u_down);
+      col += vec3(0.3, 0.7, 1.0) * smoothstep(ar * 2.8, 0.0, ad) * (0.45 + 0.55 * u_down);
+      col += vec3(1.0, 0.9, 0.5) * smoothstep(0.03, 0.0, ad) * 0.8;
+
+      // Particles / orbs driven by CPU sim
+      for (int i = 0; i < 16; i++) {
+        vec4 o = u_orbs[i];
+        float d = length(uv - o.xy);
+        float glow = smoothstep(o.z * 3.2, o.z * 0.25, d);
+        vec3 oc = hueColor(o.w + t * 0.02);
+        col += oc * glow * 0.75;
+        // core
+        col += oc * smoothstep(o.z * 0.55, 0.0, d) * 0.5;
       }
 
-      // Extra volumetric-ish layers
-      for (int k = 0; k < 4; k++) {
+      // Extra volumetric sheets (cost)
+      for (int k = 0; k < 3; k++) {
         float fk = float(k);
-        float layer = fbm(p * (3.0 + fk) + vec2(t * (0.05 + fk * 0.02), fk));
-        col += vec3(0.03, 0.05, 0.09) * layer * (1.0 - uv.y);
+        float layer = fbm(p * (2.5 + fk) + vec2(t * (0.04 + fk * 0.015), fk));
+        col += vec3(0.025, 0.04, 0.07) * layer * (1.0 - uv.y);
       }
 
-      // Vignette
-      float vig = smoothstep(1.2, 0.3, length(uv - 0.5));
+      float vig = smoothstep(1.15, 0.35, length(uv - 0.5));
       col *= vig;
-
-      // Cheap film grain (still costs)
-      col += (hash(gl_FragCoord.xy + t) - 0.5) * 0.04;
+      col += (hash(gl_FragCoord.xy + t) - 0.5) * 0.035;
 
       gl_FragColor = vec4(pow(clamp(col, 0.0, 1.0), vec3(0.95)), 1.0);
     }
@@ -175,21 +285,37 @@
 
   const uTime = gl.getUniformLocation(prog, "u_time");
   const uRes = gl.getUniformLocation(prog, "u_res");
-  const uQuality = gl.getUniformLocation(prog, "u_quality");
+  const uAttr = gl.getUniformLocation(prog, "u_attractor");
+  const uDown = gl.getUniformLocation(prog, "u_down");
+  const uOrbs = [];
+  for (let i = 0; i < MAX_ORBS; i++) {
+    uOrbs.push(gl.getUniformLocation(prog, "u_orbs[" + i + "]"));
+  }
 
-  // Left HUD – game side only
+  // HUD
   const hud = document.createElement("div");
   hud.style.cssText =
-    "position:fixed;top:8px;left:8px;z-index:20;background:rgba(0,30,0,0.8);color:#0f0;" +
+    "position:fixed;top:8px;left:8px;z-index:20;background:rgba(0,30,0,0.82);color:#0f0;" +
     "font:12px/1.45 monospace;padding:8px 12px;border-radius:6px;pointer-events:none;white-space:pre;";
   document.body.appendChild(hud);
+
+  const hint = document.getElementById("hint");
+  if (hint) {
+    hint.textContent =
+      "Arrastra con el dedo o el ratón · las partículas siguen el atractor · escena cara a propósito";
+  }
 
   let last = performance.now();
   let frames = 0;
   let fps = 0;
   let frameTime = 16.7;
+  let prevSim = performance.now();
 
   function render(now) {
+    const dt = Math.min(0.05, (now - prevSim) / 1000);
+    prevSim = now;
+    simulate(dt);
+
     frames++;
     const elapsed = now - last;
     if (elapsed >= 500) {
@@ -199,22 +325,32 @@
       last = now;
     }
 
-    // If OpenScale resized the drawing buffer, we just follow it
     const w = gl.drawingBufferWidth;
     const h = gl.drawingBufferHeight;
 
     gl.viewport(0, 0, w, h);
     gl.uniform1f(uTime, now * 0.001);
     gl.uniform2f(uRes, w, h);
-    gl.uniform1f(uQuality, 1.0);
+    gl.uniform2f(uAttr, input.x, input.y);
+    gl.uniform1f(uDown, input.down ? 1.0 : 0.0);
+    for (let i = 0; i < MAX_ORBS; i++) {
+      gl.uniform4f(
+        uOrbs[i],
+        orbData[i * 4],
+        orbData[i * 4 + 1],
+        orbData[i * 4 + 2],
+        orbData[i * 4 + 3]
+      );
+    }
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     hud.textContent =
-      "HeavyDemo (sin OpenScale / o con pastilla)\n" +
+      "HeavyDemo interactivo\n" +
       "FPS: " + fps + "\n" +
       "Frame: " + frameTime.toFixed(2) + " ms\n" +
       "Render buffer: " + w + "×" + h + "\n" +
-      "CSS: " + canvas.clientWidth + "×" + canvas.clientHeight;
+      "Pointer: " + input.x.toFixed(2) + ", " + input.y.toFixed(2) +
+      (input.down ? "  [HOLD]" : "");
 
     requestAnimationFrame(render);
   }
