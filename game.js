@@ -63,14 +63,15 @@
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     const w = window.innerWidth;
     const h = window.innerHeight;
-    // Only set if OpenScale hasn't taken control of buffer size yet;
-    // still safe: OpenScale will overwrite width/height each frame if active.
-    if (!window.OpenScale || !window.OpenScale.getInstance || !window.OpenScale.getInstance()) {
+    canvas.style.width = w + "px";
+    canvas.style.height = h + "px";
+    // If OpenScale is running it owns canvas.width/height.
+    // Otherwise render at native DPR.
+    var os = window.OpenScale && window.OpenScale.getInstance && window.OpenScale.getInstance();
+    if (!os) {
       canvas.width = Math.max(1, Math.floor(w * dpr));
       canvas.height = Math.max(1, Math.floor(h * dpr));
     }
-    canvas.style.width = w + "px";
-    canvas.style.height = h + "px";
   }
   fit();
   window.addEventListener("resize", fit);
