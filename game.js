@@ -82,7 +82,7 @@
       antialias: false,
       alpha: false,
       powerPreference: "high-performance",
-      preserveDrawingBuffer: false
+      preserveDrawingBuffer: true
     }) ||
     canvas.getContext("webgl", {
       antialias: false,
