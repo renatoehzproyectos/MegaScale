@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>MegaScale — Demo Fase 1</title>
+  <style>
+    html, body { margin: 0; background: #111; height: 100%; }
+    canvas { display: block; width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <script type="module">
+    import MegaScale from '../dist/megascale.js';
+
+    const canvas = document.getElementById('game');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+
+    // Loop de "juego" mínimo solo para tener algo renderizando.
+    function render() {
+      const t = performance.now() * 0.001;
+      gl.clearColor(0.05 + 0.05 * Math.sin(t), 0.05, 0.1, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      requestAnimationFrame(render);
+    }
+    render();
+
+    MegaScale.start({ canvas, targetFps: 60, overlay: true });
+  </script>
+</body>
+</html>
