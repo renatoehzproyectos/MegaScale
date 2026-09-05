@@ -29,14 +29,15 @@ export class BottleneckEngine {
   }
 
   /**
-   * Calcula una correlación simple entre 1/scale^2 (proxy de "cantidad de
-   * píxeles a renderizar") y el FPS observado. Correlación alta y positiva
-   * en esa relación inversa => GPU-bound. Correlación cercana a 0 => CPU-bound.
+   * Calcula una correlación de Pearson entre scale^2 (fracción de píxeles a renderizar)
+   * y el FPS observado.
+   * - A más píxeles, menor FPS (correlación fuerte y negativa < -0.6) => GPU-bound.
+   * - Cambiar la resolución apenas afecta el FPS (|correlación| < 0.3) => CPU-bound.
    */
   _correlationPixelsVsFps() {
     if (this.history.length < 3) return null;
 
-    const xs = this.history.map((h) => 1 / (h.scale * h.scale));
+    const xs = this.history.map((h) => h.scale * h.scale);
     const ys = this.history.map((h) => h.fps);
     const n = xs.length;
 
@@ -58,9 +59,7 @@ export class BottleneckEngine {
 
   /**
    * @param {Object} extra - señales adicionales opcionales
-   * @param {number} [extra.frameTimeVariance]
-   * @param {number} [extra.memoryGrowthMBPerMin]
-   */
+   * @param {number} [extra.frameTimeVariance]\n   * @param {number} [extra.memoryGrowthMBPerMin]\n   */
   detect(extra = {}) {
     const correlation = this._correlationPixelsVsFps();
 
