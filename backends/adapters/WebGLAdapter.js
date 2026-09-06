@@ -19,17 +19,19 @@ export class WebGLAdapter {
   }
 
   applyScale(scale) {
-    if (!this.canvas) return;
+    // NOTE: canvas.width/height resizing is now owned exclusively by
+    // DynamicResolution._applyToCanvas(). This adapter used to ALSO
+    // resize the canvas here, using its own independently-captured
+    // baseWidth/baseHeight - meaning on every single scale change the
+    // live WebGL backbuffer got reallocated twice in the same frame from
+    // two different tracked "base" sizes. Resizing an active WebGL
+    // canvas is expensive (full backbuffer reallocation); doing it twice
+    // per change, every change, under real GPU load, was the crash.
+    // This now just re-syncs the viewport to whatever size the canvas
+    // currently is - no independent resize authority.
     this.currentScale = scale;
-    const targetW = Math.max(64, Math.round(this.baseWidth * scale));
-    const targetH = Math.max(64, Math.round(this.baseHeight * scale));
-
-    if (this.canvas.width !== targetW || this.canvas.height !== targetH) {
-      this.canvas.width = targetW;
-      this.canvas.height = targetH;
-      if (this.gl) {
-        this.gl.viewport(0, 0, targetW, targetH);
-      }
+    if (this.gl && this.canvas) {
+      this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     }
   }
 
