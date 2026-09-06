@@ -12,6 +12,16 @@
     "build": "esbuild dist/entry.js --bundle --format=esm --outfile=dist/megascale.js --target=es2020 --minify=false --legal-comments=none && esbuild dist/entry.js --bundle --format=esm --outfile=dist/megascale.min.js --target=es2020 --minify --legal-comments=none",
     "test": "node tests/test_all.js"
   },
-  "keywords": ["webgl", "webgpu", "optimization", "fps", "upscaling", "dynamic-resolution"],
-  "license": "MIT"
+  "keywords": [
+    "webgl",
+    "webgpu",
+    "optimization",
+    "fps",
+    "upscaling",
+    "dynamic-resolution"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
 }
