@@ -1,7 +1,6 @@
 /**
  * MemoryProfiler
- * Supervisa el uso de memoria JS heap y estima el consumo de VRAM asignado
- * por MegaScale para detectar fugas o sobrecarga de memoria en tiempo real.
+ * Supervises JS heap and estimated VRAM allocated by MegaScale.
  */
 
 export class MemoryProfiler {
@@ -12,7 +11,7 @@ export class MemoryProfiler {
   }
 
   setAllocatedVram(bytes) {
-    this.vramBytes = bytes;
+    this.vramBytes = bytes || 0;
   }
 
   sample() {
@@ -25,7 +24,7 @@ export class MemoryProfiler {
     }
 
     const entry = {
-      timestamp: performance.now(),
+      timestamp: typeof performance !== 'undefined' ? performance.now() : Date.now(),
       heapUsedMB: parseFloat(heapUsedMB.toFixed(2)),
       heapTotalMB: parseFloat(heapTotalMB.toFixed(2)),
       vramMB: parseFloat((this.vramBytes / (1024 * 1024)).toFixed(2)),
@@ -42,7 +41,6 @@ export class MemoryProfiler {
   detectLeak() {
     if (this.heapSamples.length < 10) return { leaking: false, slope: 0 };
 
-    // Regresión lineal simple sobre los últimos samples de heap
     const n = this.heapSamples.length;
     let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
     for (let i = 0; i < n; i++) {
@@ -56,8 +54,23 @@ export class MemoryProfiler {
 
     const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX || 1);
     return {
-      leaking: slope > 0.5, // Si sube más de 0.5 MB/sample sostenido
+      leaking: slope > 0.5,
       growthRateMBPerSample: parseFloat(slope.toFixed(3)),
+    };
+  }
+
+  getStats() {
+    const last = this.heapSamples.length
+      ? this.heapSamples[this.heapSamples.length - 1]
+      : { heapUsedMB: 0, heapTotalMB: 0, vramMB: 0 };
+    const leak = this.detectLeak();
+    // Rough growth rate per minute (samples are ~1/frame; assume ~60 fps window)
+    const growthMBPerMin =
+      leak.growthRateMBPerSample * 60 * (60 / Math.max(1, this.sampleWindow));
+    return {
+      ...last,
+      growthMBPerMin: parseFloat(growthMBPerMin.toFixed(2)),
+      leaking: leak.leaking,
     };
   }
 }

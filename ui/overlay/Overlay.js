@@ -1,10 +1,10 @@
 /**
  * Overlay de desarrollo (Sección 31 del plan maestro).
- * En producción debe estar OFF; se activa pasando `overlay: true` al Engine.
+ * En producción debe estar OFF; se activa pasando `overlay: true`.
  */
 
 export class Overlay {
-  constructor({ parent = document.body } = {}) {
+  constructor({ parent = typeof document !== 'undefined' ? document.body : null } = {}) {
     this.el = document.createElement('div');
     this.el.style.cssText = [
       'position:fixed', 'top:8px', 'left:8px', 'z-index:999999',
@@ -13,29 +13,38 @@ export class Overlay {
       'pointer-events:none',
     ].join(';');
     this.el.textContent = 'MEGASCALE\n(esperando datos...)';
-    parent.appendChild(this.el);
+    if (parent) parent.appendChild(this.el);
   }
 
-  // dist/megascale.js calls .mount()/.unmount() on the overlay instance;
-  // this class already appends itself to the DOM in the constructor and
-  // tears down via destroy(), so these are thin compatibility wrappers
-  // rather than new behavior.
   mount() {
-    // no-op: this.el is already appended to `parent` in the constructor
+    // already mounted in constructor
   }
 
   unmount() {
     this.destroy();
   }
 
-  update({ fps, frameTime, renderer, scale, aaMode, dpr, paused, adapter }) {
+  update({
+    fps,
+    frameTime,
+    onePercentLow,
+    renderer,
+    scale,
+    aaMode,
+    dpr,
+    paused,
+    adapter,
+    bottleneck,
+  }) {
     this.el.textContent =
       `MEGASCALE\n\n` +
-      `FPS: ${fps}\n` +
-      `Frame: ${frameTime} ms\n\n` +
-      `Renderer: ${renderer}\n` +
+      `FPS: ${fps != null ? fps : '—'}\n` +
+      `1% Low: ${onePercentLow != null ? onePercentLow : '—'}\n` +
+      `Frame: ${frameTime != null ? frameTime : '—'} ms\n\n` +
+      `Renderer: ${renderer || '—'}\n` +
       (adapter ? `Adapter: ${adapter}\n` : '') +
-      `Scale: ${scale}\n` +
+      `Scale: ${scale != null ? scale : '—'}\n` +
+      (bottleneck ? `Bottleneck: ${bottleneck}\n` : '') +
       (aaMode !== undefined ? `AA: ${aaMode}\n` : '') +
       (dpr !== undefined ? `DPR eff.: ${dpr}\n` : '') +
       (paused ? `\n*** ${paused} ***` : '');
@@ -43,7 +52,7 @@ export class Overlay {
   }
 
   destroy() {
-    this.el.remove();
+    if (this.el && this.el.parentNode) this.el.remove();
   }
 }
 

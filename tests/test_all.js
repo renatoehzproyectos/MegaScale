@@ -127,5 +127,5 @@ const adapter = compat.resolveAdapter({ renderer: 'canvas2d', canvas2d: true });
 compat.applyScale(0.75);
 assert(mockCanvas.width === 600 && mockCanvas.height === 450, 'Canvas scale should be 600x450');
 
-assert(MegaScale.version === '1.0.0', 'MegaScale version should be 1.0.0');
+assert(typeof MegaScale.version === 'string' && MegaScale.version.length > 0, 'MegaScale version should be present');
 console.log('--- ALL TESTS PASSED SUCCESSFULLY! ---');

@@ -1,16 +1,16 @@
 /**
  * Controller
- * Orquestador central de MegaScale (Fases 1 a 6).
+ * Central orchestrator of MegaScale.
  *
- * Flujo de ejecución:
- * 1. Detección automática del entorno (WebGL1/2, WebGPU, Three.js, Babylon, Pixi, Canvas2D).
- * 2. Enlace del adaptador de compatibilidad universal (CompatibilityManager).
- * 3. Selección y configuración del perfil (ProfileManager).
- * 4. Micro-benchmark inicial de baseline y GPU tiering (GPUTiering).
- * 5. Monitoreo frame a frame de FPS, Frame-Time, Varianza, CPU (CPUMonitor) y Memoria.
- * 6. Predicción de rendimiento (PerformancePredictor) y detección de cuello de botella (BottleneckEngine).
- * 7. Control adaptativo de Dynamic Resolution con protección anti-oscilación (OscillationDetector).
- * 8. Vigilancia continua de salud del render (Watchdog) con rollback automático (RollbackManager).
+ * Flow:
+ * 1. Detect environment (WebGL1/2, WebGPU, Three, Babylon, Pixi, Canvas2D)
+ * 2. Bind universal adapter (CompatibilityManager)
+ * 3. Select profile (ProfileManager)
+ * 4. Baseline + lightweight monitoring
+ * 5. Frame-by-frame: FPS / frame-time / variance / 1% lows / CPU / memory
+ * 6. Predictor + BottleneckEngine → decide scale
+ * 7. Dynamic Resolution with hysteresis / oscillation protection
+ * 8. Watchdog + Rollback
  */
 
 import { RendererDetector } from '../../detection/renderer-detection/RendererDetector.js';
@@ -55,11 +55,9 @@ export class Controller {
     this.aaMode = aaMode;
     this.enableUpscaling = enableUpscaling;
 
-    // Gestores de compatibilidad y perfiles
     this.profileManager = new ProfileManager(profile);
     this.compatibilityManager = new CompatibilityManager(canvas, engine);
 
-    // Módulos de optimización e inteligencia
     this.dprOptimizer = new DPROptimizer({ targetFps });
     this.predictor = new PerformancePredictor();
     this.bottleneckEngine = new BottleneckEngine();
@@ -72,8 +70,9 @@ export class Controller {
     this.gpuTierInfo = null;
     this.activeConfig = null;
     this._lastAppliedScale = null;
+    this._lastBottleneck = 'unknown';
+    this._decisionCooldown = 0;
 
-    // Diagnóstico y seguridad
     this.detector = new RendererDetector(canvas);
     this.profiler = new Profiler();
     this.benchmark = new Benchmark();
@@ -92,9 +91,6 @@ export class Controller {
     this._watchdogCooldownMs = 0;
   }
 
-  /**
-   * Inicializa MegaScale: detecta entorno, selecciona adaptador, mide baseline y arranca el loop.
-   */
   async init() {
     this.environment = await this.detector.detect();
     this.compatibilityManager.resolveAdapter(this.environment);
@@ -111,9 +107,7 @@ export class Controller {
       initialScale: activeProf.defaultScale || 1.0,
       adapterOwnsResize,
     });
-    // When Three (or another framework adapter) owns the buffer, the
-    // "base" is the CSS/display size, not the current drawing buffer
-    // (which may already be scaled). Prefer client dimensions.
+
     const baseW = adapterOwnsResize
       ? (this.canvas.clientWidth || this.canvas.width || 800)
       : this.canvas.width;
@@ -121,6 +115,11 @@ export class Controller {
       ? (this.canvas.clientHeight || this.canvas.height || 600)
       : this.canvas.height;
     this.dynamicResolution.setBaseResolution(baseW, baseH);
+
+    if (activeProf.defaultScale && activeProf.defaultScale !== 1) {
+      this.dynamicResolution.setScale(activeProf.defaultScale);
+      this.compatibilityManager.applyScale(activeProf.defaultScale);
+    }
 
     this.rollback.snapshot({ scale: this.dynamicResolution.getScale() });
     this._lastAppliedScale = this.dynamicResolution.getScale();
@@ -132,33 +131,43 @@ export class Controller {
       this._loop(performance.now());
     }
 
-    // Baseline en segundo plano
-    this.benchmark.runBaseline(this.profiler, {
-      renderer: this.environment.renderer,
-      dpr: this.environment.dpr,
-    }).then(async (baseline) => {
-      this.watchdog.setBaselineFps(baseline.fps);
+    // Baseline in background — GPUTiering intentionally disabled:
+    // its micro-benchmark draws on the live shared canvas and calls
+    // gl.finish() in a blocking loop, freezing the main thread and
+    // corrupting concurrent rendering.
+    this.benchmark
+      .runBaseline(this.profiler, {
+        renderer: this.environment.renderer,
+        dpr: this.environment.dpr,
+      })
+      .then(async (baseline) => {
+        this.watchdog.setBaselineFps(baseline.fps);
 
-      // GPUTiering disabled: its micro-benchmark draws onto the live shared
-      // canvas context and calls gl.finish() in a blocking loop, freezing
-      // the main thread and corrupting whatever else renders to that canvas.
-      this.gpuTierInfo = { tier: 3, tierName: 'Mid', capabilityScore: 0, fillRateScore: 0, fillRateRaw: 0, benchmarkError: 'disabled' };
+        this.gpuTierInfo = {
+          tier: 3,
+          tierName: 'Mid',
+          capabilityScore: 0,
+          fillRateScore: 0,
+          fillRateRaw: 0,
+          benchmarkError: 'disabled-safe',
+        };
 
-      if (this.profileManager.activeProfileName === 'auto') {
-        const autoProf = this.profileManager.resolveAutoProfile(this.gpuTierInfo.tier);
-        this.dynamicResolution.minScale = autoProf.minScale;
-        this.dynamicResolution.maxScale = autoProf.maxScale;
-      }
+        if (this.profileManager.activeProfileName === 'auto') {
+          const autoProf = this.profileManager.resolveAutoProfile(this.gpuTierInfo.tier);
+          this.dynamicResolution.minScale = autoProf.minScale;
+          this.dynamicResolution.maxScale = autoProf.maxScale;
+        }
 
-      this.activeConfig = this.optimizationGraph.proposeConfiguration({
-        gpuTier: this.gpuTierInfo.tier,
-        bottleneck: 'unknown',
-        webgpuAvailable: this.environment.webgpu,
+        this.activeConfig = this.optimizationGraph.proposeConfiguration({
+          gpuTier: this.gpuTierInfo.tier,
+          bottleneck: 'unknown',
+          webgpuAvailable: this.environment.webgpu,
+        });
+        this.aaMode = this.activeConfig.aa || this.aaMode;
+      })
+      .catch(() => {
+        /* silent baseline failure */
       });
-      this.aaMode = this.activeConfig.aa;
-    }).catch(() => {
-      // Baseline silencioso
-    });
 
     return this.environment;
   }
@@ -175,40 +184,7 @@ export class Controller {
       if (!check.ok) {
         this._handleWatchdogTrigger({ reason: check.reason, detail: stats });
       } else {
-        const scaleBefore = this.dynamicResolution.getScale();
-
-        // Safety guard: if this single frame already took an extremely
-        // long time (e.g. > 250ms, meaning ~4fps or worse), the GPU is
-        // very likely backlogged with queued draw calls. Forcing a canvas
-        // resize (which reallocates the live WebGL backbuffer) at exactly
-        // that moment can make the driver block the CPU thread until the
-        // backlog clears - a real synchronous stall with no JS exception,
-        // long enough to trip Android's "Page Unresponsive" ANR. So we
-        // skip resizing this frame and let things catch up first; the
-        // watchdog/resolution logic gets another chance next frame once
-        // frame time comes back down.
-        const CATASTROPHIC_FRAME_MS = 250;
-        const gpuLikelyBacklogged = stats.frameTime > CATASTROPHIC_FRAME_MS;
-
-        const changed = gpuLikelyBacklogged ? false : this.dynamicResolution.update(stats);
-
-        // Alimentar inteligencia
-        this.predictor.addSample(scaleBefore, stats.fps);
-        this.bottleneckEngine.record(scaleBefore, stats.fps);
-
-        if (changed) {
-          const newScale = this.dynamicResolution.getScale();
-          this.compatibilityManager.applyScale(newScale);
-          this.oscillationDetector.recordChange(newScale > scaleBefore ? 'up' : 'down');
-
-          if (this.oscillationDetector.isOscillating()) {
-            const multiplier = this.oscillationDetector.getRecommendedHoldMultiplier();
-            this.dynamicResolution.hysteresisFrames = Math.round(30 * multiplier);
-          }
-
-          this.rollback.snapshot({ scale: newScale });
-          this._lastAppliedScale = newScale;
-        }
+        this._decideAndApply(stats);
       }
 
       this.memoryProfiler.setAllocatedVram(this.memoryManager.allocatedBytes);
@@ -218,11 +194,13 @@ export class Controller {
         this.overlay.update({
           fps: stats.fps,
           frameTime: stats.frameTime,
-          renderer: this.environment.renderer,
+          onePercentLow: stats.onePercentLow,
+          renderer: this.environment ? this.environment.renderer : 'unknown',
           adapter: this.compatibilityManager.adapterType,
           scale: this.dynamicResolution.getScale(),
           aaMode: this.aaMode,
           dpr: this.dprOptimizer.getEffectiveDpr(),
+          bottleneck: this._lastBottleneck,
         });
       }
     }
@@ -234,6 +212,86 @@ export class Controller {
     }
   }
 
+  /**
+   * Core decision: feed intelligence modules, respect bottleneck, use
+   * predictor when confident, apply scale only when net value is positive.
+   */
+  _decideAndApply(stats) {
+    const scaleBefore = this.dynamicResolution.getScale();
+
+    // Guard: catastrophic frame → never resize while GPU is backlogged
+    const CATASTROPHIC_FRAME_MS = 250;
+    if (stats.frameTime > CATASTROPHIC_FRAME_MS) {
+      this.predictor.addSample(scaleBefore, stats.fps);
+      this.bottleneckEngine.record(scaleBefore, stats.fps);
+      return;
+    }
+
+    // Feed samples every frame (cheap)
+    this.predictor.addSample(scaleBefore, stats.fps);
+    this.bottleneckEngine.record(scaleBefore, stats.fps);
+
+    // Periodic bottleneck re-evaluation (not every frame)
+    this._decisionCooldown++;
+    if (this._decisionCooldown >= 15) {
+      this._decisionCooldown = 0;
+      const memStats = this.memoryProfiler.getStats ? this.memoryProfiler.getStats() : {};
+      const bn = this.bottleneckEngine.detect({
+        frameTimeVariance: stats.variance,
+        memoryGrowthMBPerMin: memStats.growthMBPerMin || 0,
+      });
+      this._lastBottleneck = bn.bottleneck || 'unknown';
+      this.dynamicResolution.setBottleneck(this._lastBottleneck);
+
+      // Update active config recommendation
+      if (this.activeConfig && this.gpuTierInfo) {
+        this.activeConfig = this.optimizationGraph.proposeConfiguration({
+          gpuTier: this.gpuTierInfo.tier,
+          bottleneck: this._lastBottleneck,
+          webgpuAvailable: this.environment && this.environment.webgpu,
+        });
+      }
+    }
+
+    // Predictor suggestion when model is ready and not distrusted
+    let suggested = null;
+    if (this.predictor.hasModel() && !this.predictor.shouldDistrustModel()) {
+      suggested = this.predictor.predictScaleForTarget(this.targetFps, {
+        minScale: this.dynamicResolution.minScale,
+        maxScale: this.dynamicResolution.maxScale,
+      });
+    }
+    this.dynamicResolution.setSuggestedScale(suggested);
+
+    // Validate last prediction (feeds distrust counter)
+    if (suggested != null) {
+      const predictedFps = this.predictor.predictFps(scaleBefore);
+      this.predictor.validatePrediction(predictedFps, stats.fps);
+    }
+
+    const changed = this.dynamicResolution.update(stats);
+
+    if (changed) {
+      const newScale = this.dynamicResolution.getScale();
+      this.compatibilityManager.applyScale(newScale);
+      this.oscillationDetector.recordChange(newScale > scaleBefore ? 'up' : 'down');
+
+      if (this.oscillationDetector.isOscillating()) {
+        const multiplier = this.oscillationDetector.getRecommendedHoldMultiplier();
+        this.dynamicResolution.hysteresisFrames = Math.round(30 * multiplier);
+      } else {
+        // decay hysteresis back toward normal
+        this.dynamicResolution.hysteresisFrames = Math.max(
+          20,
+          Math.round(this.dynamicResolution.hysteresisFrames * 0.95)
+        );
+      }
+
+      this.rollback.snapshot({ scale: newScale });
+      this._lastAppliedScale = newScale;
+    }
+  }
+
   _handleWatchdogTrigger({ reason, detail }) {
     const lastGood = this.rollback.rollback({ disableModule: 'dynamic-resolution' });
 
@@ -242,14 +300,12 @@ export class Controller {
       this.compatibilityManager.applyScale(lastGood.scale);
     }
 
-    if (reason === 'context_loss' || reason === 'fps_collapse') {
+    if (reason === 'context_loss' || reason === 'fps_collapse' || reason === 'fps_floor') {
       this._enabled = false;
       this.memoryManager.handleContextLost();
       // eslint-disable-next-line no-console
       console.warn(`[MegaScale] Rollback disparado (${reason}). Optimizaciones pausadas.`);
 
-      // Make the pause visible instead of letting the overlay silently
-      // stop updating (which looks like a freeze/crash to the user).
       if (this.overlay) {
         this.overlay.update({
           fps: detail && detail.fps,
@@ -263,16 +319,11 @@ export class Controller {
         });
       }
 
-      // Previously this disable was permanent, with no way back on and no
-      // overlay update ever firing again - that's the "freeze" bug. Instead,
-      // retry after a cooldown so a transient stall (e.g. a one-off GC pause
-      // or a heavy scene load spike) doesn't kill optimization for the rest
-      // of the session.
       if (this._watchdogRetryTimer) clearTimeout(this._watchdogRetryTimer);
       this._watchdogCooldownMs = reason === 'context_loss' ? 6000 : 4000;
       this._watchdogRetryTimer = setTimeout(() => {
         this._enabled = true;
-        this.watchdog.reset && this.watchdog.reset();
+        if (this.watchdog.reset) this.watchdog.reset();
         // eslint-disable-next-line no-console
         console.warn('[MegaScale] Reanudando tras cooldown de watchdog.');
       }, this._watchdogCooldownMs);
@@ -319,6 +370,7 @@ export class Controller {
         ? this.predictor.predictFps(this.dynamicResolution.getScale())
         : null,
       isOscillating: this.oscillationDetector.isOscillating(),
+      onePercentLow: this.profiler.getStats().onePercentLow,
     };
   }
 

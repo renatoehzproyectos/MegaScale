@@ -1,15 +1,14 @@
 /**
- * MegaWatchdog
- * Supervisa FPS, frame time, contexto y errores. Si detecta un fallo
- * crítico, dispara un rollback y desactiva el módulo problemático
- * (Sección 28/29 del plan maestro). MegaScale nunca debe ser un punto
- * único de fallo.
+ * Watchdog
+ * Supervises FPS, frame time, context loss and errors.
+ * On critical failure it triggers rollback via the supplied callback.
+ * MegaScale must never be a single point of failure.
  */
 
 export class Watchdog {
   constructor({
     minAcceptableFps = 10,
-    fpsCollapseThreshold = 0.5, // caída relativa vs baseline que se considera colapso
+    fpsCollapseThreshold = 0.5,
     onRollback = () => {},
   } = {}) {
     this.minAcceptableFps = minAcceptableFps;
@@ -18,6 +17,8 @@ export class Watchdog {
     this.baselineFps = null;
     this.contextLost = false;
     this.errors = [];
+    this._lastTriggerTs = 0;
+    this._triggerCooldownMs = 1500; // prevent spam triggers
   }
 
   setBaselineFps(fps) {
@@ -29,24 +30,28 @@ export class Watchdog {
     canvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
       this.contextLost = true;
-      this._trigger('context_loss', { message: 'WebGL context lost' });
-    });
+      this._trigger('context_loss', { event: 'webglcontextlost' });
+    }, false);
     canvas.addEventListener('webglcontextrestored', () => {
       this.contextLost = false;
-    });
+    }, false);
   }
 
   reportError(source, error) {
     this.errors.push({ source, error: String(error), timestamp: Date.now() });
+    if (this.errors.length > 20) this.errors.shift();
     this._trigger('error', { source, error: String(error) });
   }
 
   /**
-   * Debe llamarse periódicamente (p.ej. cada frame o cada segundo) con las
-   * stats actuales del Profiler.
+   * Called each frame (or periodically) with Profiler stats.
    */
   check(stats) {
     if (!stats) return { ok: true };
+
+    if (this.contextLost) {
+      return { ok: false, reason: 'context_loss', stats };
+    }
 
     if (stats.fps > 0 && stats.fps < this.minAcceptableFps) {
       this._trigger('fps_floor', { fps: stats.fps });
@@ -61,15 +66,20 @@ export class Watchdog {
       }
     }
 
-    if (this.contextLost) {
-      return { ok: false, reason: 'context_loss', stats };
-    }
-
     return { ok: true, stats };
   }
 
   _trigger(reason, detail) {
-    this.onRollback({ reason, detail, timestamp: Date.now() });
+    const now = Date.now();
+    if (now - this._lastTriggerTs < this._triggerCooldownMs) return;
+    this._lastTriggerTs = now;
+    this.onRollback({ reason, detail, timestamp: now });
+  }
+
+  /** Clear transient failure state so optimization can resume. */
+  reset() {
+    this.contextLost = false;
+    this._lastTriggerTs = 0;
   }
 }
 
