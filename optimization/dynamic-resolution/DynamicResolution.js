@@ -81,6 +81,18 @@ export class DynamicResolution {
     this.canvas.height = h;
     // El estilo CSS se mantiene al tamaño de presentación original para que
     // el navegador haga el upscale final (pipeline de presentación).
+
+    // Cheap perceptual sharpening: when rendering below native resolution,
+    // the browser's own upscale-to-display-size pass softens the image.
+    // A light contrast/saturation boost recovers perceived detail at
+    // essentially zero cost (it's a compositor-level CSS filter, not a
+    // render pass) - this is the same trick OpenScale uses, so MegaScale's
+    // output isn't needlessly softer at an equivalent resolution saving.
+    if (this.currentScale < 1) {
+      this.canvas.style.filter = 'contrast(1.06) saturate(1.1)';
+    } else {
+      this.canvas.style.filter = '';
+    }
   }
 
   getScale() {
