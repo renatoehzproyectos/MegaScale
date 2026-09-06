@@ -33,12 +33,14 @@ export class RendererDetector {
       engine: this._detectEngine(),
     };
 
-    // Orden de comprobación: WebGPU -> WebGL2 -> WebGL1 -> Canvas2D
-    if (await this._checkWebGPU()) {
-      report.webgpu = true;
-      report.renderer = 'webgpu';
-      report.contextType = 'webgpu';
-    } else if (this._checkWebGL2(report)) {
+    // Orden de comprobación: WebGL2 -> WebGL1 -> Canvas2D -> WebGPU
+    // (invertido respecto al original: si el canvas YA tiene un contexto
+    // WebGL activo -por ejemplo, porque Three.js ya lo creó antes de que
+    // MegaScale arrancara- reportar WebGPU aquí sería falso, ya que
+    // _checkWebGPU() solo comprueba soporte del NAVEGADOR (navigator.gpu),
+    // no lo que el canvas realmente está usando. Comprobamos primero lo
+    // que el canvas ya tiene enlazado.)
+    if (this._checkWebGL2(report)) {
       report.webgl2 = true;
       report.renderer = 'webgl2';
       report.contextType = 'webgl2';
@@ -50,6 +52,10 @@ export class RendererDetector {
       report.canvas2d = true;
       report.renderer = 'canvas2d';
       report.contextType = '2d';
+    } else if (await this._checkWebGPU()) {
+      report.webgpu = true;
+      report.renderer = 'webgpu';
+      report.contextType = 'webgpu';
     }
 
     this.result = report;
