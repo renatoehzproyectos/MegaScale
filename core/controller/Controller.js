@@ -165,7 +165,21 @@ export class Controller {
         this._handleWatchdogTrigger({ reason: check.reason, detail: stats });
       } else {
         const scaleBefore = this.dynamicResolution.getScale();
-        const changed = this.dynamicResolution.update(stats);
+
+        // Safety guard: if this single frame already took an extremely
+        // long time (e.g. > 250ms, meaning ~4fps or worse), the GPU is
+        // very likely backlogged with queued draw calls. Forcing a canvas
+        // resize (which reallocates the live WebGL backbuffer) at exactly
+        // that moment can make the driver block the CPU thread until the
+        // backlog clears - a real synchronous stall with no JS exception,
+        // long enough to trip Android's "Page Unresponsive" ANR. So we
+        // skip resizing this frame and let things catch up first; the
+        // watchdog/resolution logic gets another chance next frame once
+        // frame time comes back down.
+        const CATASTROPHIC_FRAME_MS = 250;
+        const gpuLikelyBacklogged = stats.frameTime > CATASTROPHIC_FRAME_MS;
+
+        const changed = gpuLikelyBacklogged ? false : this.dynamicResolution.update(stats);
 
         // Alimentar inteligencia
         this.predictor.addSample(scaleBefore, stats.fps);
