@@ -4,6 +4,12 @@
  * Performance Predictor). Ajusta el render scale del canvas dentro de
  * límites seguros, con hysteresis simple para evitar oscilaciones
  * (Sección 9 del plan maestro).
+ *
+ * Ownership:
+ * - By default this class resizes canvas.width/height (raw WebGL / Canvas2D).
+ * - When a framework adapter (e.g. ThreeWebGLAdapter) reports that it owns
+ *   the buffer size, this class only updates the numeric scale + CSS
+ *   sharpen filter and lets the adapter drive setSize/setPixelRatio.
  */
 
 export class DynamicResolution {
@@ -14,6 +20,7 @@ export class DynamicResolution {
     step = 0.05,
     targetFps = 60,
     hysteresisFrames = 30, // nº de mediciones estables antes de permitir otro cambio
+    adapterOwnsResize = false,
   } = {}) {
     this.canvas = canvas;
     this.minScale = minScale;
@@ -21,6 +28,7 @@ export class DynamicResolution {
     this.step = step;
     this.targetFps = targetFps;
     this.hysteresisFrames = hysteresisFrames;
+    this.adapterOwnsResize = !!adapterOwnsResize;
 
     this.currentScale = 1.0;
     this._framesSinceLastChange = 0;
@@ -31,6 +39,10 @@ export class DynamicResolution {
   setBaseResolution(width, height) {
     this._baseWidth = width;
     this._baseHeight = height;
+  }
+
+  setAdapterOwnsResize(flag) {
+    this.adapterOwnsResize = !!flag;
   }
 
   /**
@@ -74,7 +86,25 @@ export class DynamicResolution {
   }
 
   _applyToCanvas() {
-    if (!this.canvas || !this._baseWidth || !this._baseHeight) return;
+    if (!this.canvas) return;
+
+    // When a framework adapter owns the drawing buffer (Three, etc.),
+    // we must NOT touch canvas.width/height — the adapter will call
+    // renderer.setSize / setPixelRatio. We only keep the CSS sharpen
+    // filter in sync for the rare path where the adapter doesn't set it.
+    if (this.adapterOwnsResize) {
+      // Filter is applied by ThreeWebGLAdapter itself; leave a light
+      // safety net in case an older adapter is used.
+      if (this.currentScale < 1 && !this.canvas.style.filter) {
+        this.canvas.style.filter = 'contrast(1.06) saturate(1.1)';
+      } else if (this.currentScale >= 1) {
+        // Don't clear if adapter already manages it; only clear when we
+        // are the sole owner of the filter (adapterOwnsResize but no filter set).
+      }
+      return;
+    }
+
+    if (!this._baseWidth || !this._baseHeight) return;
     const w = Math.round(this._baseWidth * this.currentScale);
     const h = Math.round(this._baseHeight * this.currentScale);
     this.canvas.width = w;

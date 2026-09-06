@@ -102,14 +102,25 @@ export class Controller {
     this.watchdog.attachToCanvas(this.canvas);
 
     const activeProf = this.profileManager.activeProfile;
+    const adapterOwnsResize = this.compatibilityManager.adapterOwnsResize();
     this.dynamicResolution = new DynamicResolution({
       canvas: this.canvas,
       targetFps: this.targetFps,
       minScale: activeProf.minScale || 0.35,
       maxScale: activeProf.maxScale || 1.0,
       initialScale: activeProf.defaultScale || 1.0,
+      adapterOwnsResize,
     });
-    this.dynamicResolution.setBaseResolution(this.canvas.width, this.canvas.height);
+    // When Three (or another framework adapter) owns the buffer, the
+    // "base" is the CSS/display size, not the current drawing buffer
+    // (which may already be scaled). Prefer client dimensions.
+    const baseW = adapterOwnsResize
+      ? (this.canvas.clientWidth || this.canvas.width || 800)
+      : this.canvas.width;
+    const baseH = adapterOwnsResize
+      ? (this.canvas.clientHeight || this.canvas.height || 600)
+      : this.canvas.height;
+    this.dynamicResolution.setBaseResolution(baseW, baseH);
 
     this.rollback.snapshot({ scale: this.dynamicResolution.getScale() });
     this._lastAppliedScale = this.dynamicResolution.getScale();
@@ -208,6 +219,7 @@ export class Controller {
           fps: stats.fps,
           frameTime: stats.frameTime,
           renderer: this.environment.renderer,
+          adapter: this.compatibilityManager.adapterType,
           scale: this.dynamicResolution.getScale(),
           aaMode: this.aaMode,
           dpr: this.dprOptimizer.getEffectiveDpr(),
@@ -243,6 +255,7 @@ export class Controller {
           fps: detail && detail.fps,
           frameTime: detail && detail.frameTime,
           renderer: this.environment ? this.environment.renderer : 'unknown',
+          adapter: this.compatibilityManager ? this.compatibilityManager.adapterType : undefined,
           scale: this.dynamicResolution ? this.dynamicResolution.getScale() : 1,
           aaMode: this.aaMode,
           dpr: this.dprOptimizer ? this.dprOptimizer.getEffectiveDpr() : undefined,

@@ -28,12 +28,13 @@ export class Overlay {
     this.destroy();
   }
 
-  update({ fps, frameTime, renderer, scale, aaMode, dpr, paused }) {
+  update({ fps, frameTime, renderer, scale, aaMode, dpr, paused, adapter }) {
     this.el.textContent =
       `MEGASCALE\n\n` +
       `FPS: ${fps}\n` +
       `Frame: ${frameTime} ms\n\n` +
       `Renderer: ${renderer}\n` +
+      (adapter ? `Adapter: ${adapter}\n` : '') +
       `Scale: ${scale}\n` +
       (aaMode !== undefined ? `AA: ${aaMode}\n` : '') +
       (dpr !== undefined ? `DPR eff.: ${dpr}\n` : '') +
