@@ -88,6 +88,8 @@ export class Controller {
     this._running = false;
     this._rafHandle = null;
     this._enabled = true;
+    this._watchdogRetryTimer = null;
+    this._watchdogCooldownMs = 0;
   }
 
   /**
@@ -219,6 +221,34 @@ export class Controller {
       this.memoryManager.handleContextLost();
       // eslint-disable-next-line no-console
       console.warn(`[MegaScale] Rollback disparado (${reason}). Optimizaciones pausadas.`);
+
+      // Make the pause visible instead of letting the overlay silently
+      // stop updating (which looks like a freeze/crash to the user).
+      if (this.overlay) {
+        this.overlay.update({
+          fps: detail && detail.fps,
+          frameTime: detail && detail.frameTime,
+          renderer: this.environment ? this.environment.renderer : 'unknown',
+          scale: this.dynamicResolution ? this.dynamicResolution.getScale() : 1,
+          aaMode: this.aaMode,
+          dpr: this.dprOptimizer ? this.dprOptimizer.getEffectiveDpr() : undefined,
+          paused: `PAUSED (${reason}) - retry in ${Math.round(this._watchdogCooldownMs / 1000)}s`,
+        });
+      }
+
+      // Previously this disable was permanent, with no way back on and no
+      // overlay update ever firing again - that's the "freeze" bug. Instead,
+      // retry after a cooldown so a transient stall (e.g. a one-off GC pause
+      // or a heavy scene load spike) doesn't kill optimization for the rest
+      // of the session.
+      if (this._watchdogRetryTimer) clearTimeout(this._watchdogRetryTimer);
+      this._watchdogCooldownMs = reason === 'context_loss' ? 6000 : 4000;
+      this._watchdogRetryTimer = setTimeout(() => {
+        this._enabled = true;
+        this.watchdog.reset && this.watchdog.reset();
+        // eslint-disable-next-line no-console
+        console.warn('[MegaScale] Reanudando tras cooldown de watchdog.');
+      }, this._watchdogCooldownMs);
     }
   }
 
@@ -235,6 +265,10 @@ export class Controller {
 
   stop() {
     this._running = false;
+    if (this._watchdogRetryTimer) {
+      clearTimeout(this._watchdogRetryTimer);
+      this._watchdogRetryTimer = null;
+    }
     this.profiler.stop();
     this.cpuMonitor.destroy();
     this.memoryManager.disposeAll();

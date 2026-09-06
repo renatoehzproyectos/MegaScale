@@ -16,7 +16,7 @@ export class Overlay {
     parent.appendChild(this.el);
   }
 
-  update({ fps, frameTime, renderer, scale, aaMode, dpr }) {
+  update({ fps, frameTime, renderer, scale, aaMode, dpr, paused }) {
     this.el.textContent =
       `MEGASCALE\n\n` +
       `FPS: ${fps}\n` +
@@ -24,7 +24,9 @@ export class Overlay {
       `Renderer: ${renderer}\n` +
       `Scale: ${scale}\n` +
       (aaMode !== undefined ? `AA: ${aaMode}\n` : '') +
-      (dpr !== undefined ? `DPR eff.: ${dpr}` : '');
+      (dpr !== undefined ? `DPR eff.: ${dpr}\n` : '') +
+      (paused ? `\n*** ${paused} ***` : '');
+    this.el.style.color = paused ? '#f80' : '#0f0';
   }
 
   destroy() {
