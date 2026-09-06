@@ -16,6 +16,18 @@ export class Overlay {
     parent.appendChild(this.el);
   }
 
+  // dist/megascale.js calls .mount()/.unmount() on the overlay instance;
+  // this class already appends itself to the DOM in the constructor and
+  // tears down via destroy(), so these are thin compatibility wrappers
+  // rather than new behavior.
+  mount() {
+    // no-op: this.el is already appended to `parent` in the constructor
+  }
+
+  unmount() {
+    this.destroy();
+  }
+
   update({ fps, frameTime, renderer, scale, aaMode, dpr, paused }) {
     this.el.textContent =
       `MEGASCALE\n\n` +
